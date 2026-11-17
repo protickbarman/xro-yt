@@ -27,8 +27,12 @@ USQUE_PID=""
 start_usque() {
   local mode="$1"; shift
   log "starting usque SOCKS5 proxy on ${SOCKS_ADDR}:${SOCKS_PORT} (${mode})"
+  # Hosts like Render probe every listening socket inside the container once a
+  # second, which makes usque log "failed during negotiation" for each non-SOCKS
+  # connection. Drop that one line so real tunnel errors stay visible.
   usque --config "$CONFIG" socks --bind "$SOCKS_ADDR" --port "$SOCKS_PORT" \
-    --always-reconnect "$@" &
+    --always-reconnect "$@" \
+    2> >(grep --line-buffered -v "failed during negotiation" >&2) &
   USQUE_PID=$!
 }
 
