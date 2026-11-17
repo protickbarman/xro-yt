@@ -57,9 +57,30 @@ On first start the entrypoint registers a WARP device and writes the config to
 no credentials are baked into the image). The SOCKS proxy is bound to
 `127.0.0.1` inside the container and is never published.
 
+WARP prefers QUIC (HTTP/3) over UDP, which many hosts block. The entrypoint
+detects a dead QUIC tunnel and automatically falls back to HTTP/2 over TCP+TLS,
+so it works on hosts that drop UDP (Render, most serverless platforms). Force a
+transport with `WARP_TRANSPORT=http2` (or `http3`) if you want to skip the probe.
+
+| Env var | Default | Meaning |
+|---------|---------|---------|
+| `WARP_TRANSPORT` | `auto` | `auto` \| `http3` \| `http2` |
+| `WARP_CONFIG` | `/data/warp.json` | where the WARP device config lives |
+
 | Build arg | Default | Meaning |
 |-----------|---------|---------|
 | `USQUE_VERSION` | `4.2.1` | usque release to download (checksum-verified) |
+
+### Deploying to Render / Railway / Fly
+
+Works as a plain Docker service. Pick the **Docker** environment, and set:
+
+- **Port:** `8787` (Render sets `PORT` itself — the server honours it).
+- **Disk (optional):** mount at `/data` so the WARP registration is reused
+  across deploys; without it a new device is registered on every boot.
+- **Health check path:** `/health`.
+
+Leave `WARP_TRANSPORT=auto` — it will use QUIC where allowed and TCP elsewhere.
 
 ## Configuration (env)
 
