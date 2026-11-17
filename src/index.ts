@@ -1,6 +1,6 @@
 import express, { type Request, type Response } from "express";
 import { config } from "./config.js";
-import { getVideoInfo, type FormatInfo } from "./innertube.js";
+import { getVideoInfo, searchYouTube, type FormatInfo, type SearchType } from "./innertube.js";
 import { streamMedia } from "./stream.js";
 import { mergeAndStream } from "./merge.js";
 import { renderHome } from "./home.js";
@@ -18,6 +18,7 @@ function wantsHtml(req: Request): boolean {
 }
 
 app.get("/", (_req, res) => {
+  res.setHeader("Cache-Control", "no-cache");
   res.type("html").send(renderHome());
 });
 
@@ -107,6 +108,59 @@ app.get("/api/info", async (req: Request, res: Response) => {
 });
 
 /**
+ * GET /api/search?q=<query>[&type=video|channel|playlist|all][&continuation=<token>]
+ * Searches YouTube and returns results with ready-to-use video/download links.
+ * Pass the returned `continuation` back to fetch the next page.
+ */
+app.get("/api/search", async (req: Request, res: Response) => {
+  const q = String(req.query.q ?? req.query.query ?? req.query.search ?? "").trim();
+  const continuation = req.query.continuation ? String(req.query.continuation) : undefined;
+  const typeParam = String(req.query.type ?? "video").toLowerCase();
+  if (!["video", "channel", "playlist", "all"].includes(typeParam)) {
+    res.status(400).json({ ok: false, error: "invalid type; use video|channel|playlist|all" });
+    return;
+  }
+  if (!q && !continuation) {
+    res.status(400).json({ ok: false, error: "missing query param: q" });
+    return;
+  }
+  try {
+    const search = await searchYouTube(q, { type: typeParam as SearchType, continuation });
+    const base = baseUrl(req);
+    const results = search.results.map((r) => {
+      if (r.kind === "video") {
+        return {
+          ...r,
+          url: `https://www.youtube.com/watch?v=${r.videoId}`,
+          infoUrl: `${base}/api/info?v=${encodeURIComponent(r.videoId)}`,
+          /** Full-quality video+audio muxed by the server (VISIONOS has no muxed track). */
+          downloadUrl: `${base}/api/merge?v=${encodeURIComponent(r.videoId)}`,
+          /** Audio-only, proxied. */
+          audioUrl: `${base}/api/link?v=${encodeURIComponent(r.videoId)}&format=audio`,
+          /** Everything: formats, direct URLs, proxied links. */
+          linkUrl: `${base}/api/link?v=${encodeURIComponent(r.videoId)}`,
+        };
+      }
+      if (r.kind === "playlist") {
+        return { ...r, url: `https://www.youtube.com/playlist?list=${r.playlistId}` };
+      }
+      return { ...r, url: `https://www.youtube.com/channel/${r.channelId}` };
+    });
+
+    res.json({
+      ok: true,
+      query: search.query,
+      type: search.type,
+      count: results.length,
+      continuation: search.continuation ?? null,
+      results,
+    });
+  } catch (err) {
+    res.status(502).json({ ok: false, error: String(err instanceof Error ? err.message : err) });
+  }
+});
+
+/**
  * GET /api/link?v=<id|url>[&itag=][&quality=best|1080|720|360][&format=]
  * Returns a single best-matching download link.
  */
@@ -127,7 +181,10 @@ app.get("/api/link", async (req: Request, res: Response) => {
     if (itag) {
       candidates = candidates.filter((f) => f.itag === itag);
     } else {
-      candidates = candidates.filter((f) => (wantKind === "any" ? true : f.kind === wantKind));
+      const matchKind = wantKind === "any" ? candidates : candidates.filter((f) => f.kind === wantKind);
+      // VISIONOS never returns a muxed track, so fall back to the best video-only
+      // track (callers should use /api/merge to get a playable file).
+      candidates = matchKind.length > 0 || wantKind !== "muxed" ? matchKind : candidates.filter((f) => f.kind !== "audio");
       if (quality !== "best" && quality !== "worst") {
         const h = Number(quality);
         if (!Number.isNaN(h)) candidates = candidates.filter((f) => !f.height || f.height <= h);
@@ -217,25 +274,32 @@ app.get("/api/download", async (req: Request, res: Response) => {
 });
 
 /**
- * GET /api/merge?v=<id|url>&video=<itag>[&audio=<itag>][&dl=1]
- * Downloads both tracks server-side and muxes them into one file.
+ * GET /api/merge?v=<id|url>[&video=<itag>][&audio=<itag>][&dl=1]
+ * Downloads both tracks server-side and muxes them into one file. Omit `video`
+ * to let the server pick the highest-quality video track.
  */
 app.get("/api/merge", async (req: Request, res: Response) => {
   const input = String(req.query.v ?? req.query.url ?? req.query.id ?? "").trim();
-  const videoItag = Number(req.query.video);
-  if (!input || Number.isNaN(videoItag)) {
+  if (!input) {
     if (wantsHtml(req)) {
       res.type("html").send(renderHome());
       return;
     }
-    res.status(400).json({ ok: false, error: "missing query params: v and video (itag)" });
+    res.status(400).json({ ok: false, error: "missing query param: v (video id or URL)" });
     return;
   }
   try {
     const info = await getVideoInfo(input);
-    const video = info.formats.find((f) => f.itag === videoItag && f.kind !== "audio");
+    const videoItag = req.query.video ? Number(req.query.video) : undefined;
+    const videoCandidates = info.formats.filter((f) => f.kind !== "audio");
+    const video = videoItag
+      ? videoCandidates.find((f) => f.itag === videoItag)
+      : videoCandidates.sort((a, b) => (b.height ?? 0) - (a.height ?? 0) || b.bitrate - a.bitrate)[0];
     if (!video) {
-      res.status(404).json({ ok: false, error: `no video format with itag ${videoItag}` });
+      res.status(404).json({
+        ok: false,
+        error: videoItag ? `no video format with itag ${videoItag}` : "no video format available",
+      });
       return;
     }
     // Prefer an audio track whose container matches the video (AAC-in-MP4 or
@@ -272,7 +336,7 @@ app.use((req, res) => {
   res.status(404).json({
     ok: false,
     error: "not found",
-    routes: ["GET /", "GET /health", "GET /api/info?v=", "GET /api/link?v=", "GET /api/download?v=&itag="],
+    routes: ["GET /", "GET /health", "GET /api/search?q=", "GET /api/info?v=", "GET /api/link?v=", "GET /api/download?v=&itag="],
   });
 });
 

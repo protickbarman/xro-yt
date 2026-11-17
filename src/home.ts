@@ -42,18 +42,43 @@ export function renderHome(): string {
   .copy.done { background:var(--grn); color:#04120a; }
   .note { margin-top:26px; color:var(--mut); font-size:12px; }
   code { background:#0e141d; padding:2px 6px; border-radius:5px; }
+  .tabs { display:flex; gap:6px; margin:14px 0 0; }
+  .tabs button { background:#1a2432; color:var(--mut); font-size:13px; padding:7px 14px; border-radius:999px; }
+  .tabs button.on { background:var(--acc2); color:#04121f; }
+  #results { margin-top:18px; display:none; }
+  #results.show { display:block; }
+  .cards { display:grid; gap:12px; grid-template-columns:repeat(auto-fill,minmax(260px,1fr)); }
+  .card { display:flex; gap:10px; background:var(--card); border:1px solid var(--line); border-radius:10px; padding:9px; cursor:pointer; text-align:left; }
+  .card:hover { border-color:var(--acc2); }
+  .card img { width:120px; height:68px; object-fit:cover; border-radius:6px; background:#000; flex:0 0 auto; }
+  .card .t { font-size:13px; font-weight:600; line-height:1.35; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden; }
+  .card .m { color:var(--mut); font-size:11.5px; margin-top:4px; }
+  .card.chan { align-items:center; }
+  .card.chan img { width:52px; height:52px; border-radius:50%; }
+  #more { margin-top:14px; }
 </style>
 </head>
 <body>
 <div class="wrap">
   <h1>Vidmate YT Downloader</h1>
-  <div class="sub">Paste a YouTube link or video id — pick Audio or Video, then grab the direct link or the download link.</div>
+  <div class="sub">Search YouTube or paste a link / video id — then pick Audio, Video, or a muxed file.</div>
 
   <form id="f">
-    <input id="q" type="text" placeholder="https://youtu.be/KXPwKTI1zQQ  or  KXPwKTI1zQQ" autocomplete="off" autofocus>
-    <button id="go" type="submit">Get links</button>
+    <input id="q" type="text" placeholder="Search YouTube, or paste a link / video id…" autocomplete="off" autofocus>
+    <button id="go" type="submit">Search</button>
   </form>
+  <div class="tabs" id="tabs">
+    <button data-type="video" class="on">Videos</button>
+    <button data-type="channel">Channels</button>
+    <button data-type="playlist">Playlists</button>
+    <button data-type="all">All</button>
+  </div>
   <div class="msg" id="msg"></div>
+
+  <div id="results">
+    <div class="cards" id="cards"></div>
+    <button id="more" class="copy" style="display:none">Load more</button>
+  </div>
 
   <div class="vid" id="vid">
     <div class="meta">
@@ -138,14 +163,6 @@ document.querySelectorAll("#picker button").forEach(b => b.onclick = () => {
   b.classList.add("on"); KIND = b.dataset.kind; renderRows();
 });
 
-$("f").addEventListener("submit", async (e) => {
-  e.preventDefault();
-  const q = $("q").value.trim();
-  if (!q) return;
-  const u = new URL(location.href); u.searchParams.set("v", q); history.replaceState(null, "", u);
-  load(q);
-});
-
 async function load(q) {
   $("go").disabled = true;
   $("msg").className = "msg";
@@ -173,6 +190,84 @@ async function load(q) {
 
 const initial = new URLSearchParams(location.search).get("v");
 if (initial) { $("q").value = initial; load(initial); }
+
+/* ---------- search ---------- */
+let STYPE = "video", SCONT = null, SLASTQ = "";
+
+function isUrl(s) {
+  return /^https?:/i.test(s) || /^[A-Za-z0-9_-]{11}$/.test(s) || s.toLowerCase().includes("youtu.be");
+}
+
+function fmtViews(t) { return t || ""; }
+
+function cardFor(r) {
+  if (r.kind === "video") {
+    const m = [r.channel, r.lengthText, fmtViews(r.viewCountText), r.publishedTimeText].filter(Boolean).join(" · ");
+    return '<div class="card" data-v="' + esc(r.videoId) + '">'
+      + '<img loading="lazy" src="' + esc(r.thumbnail || ("https://i.ytimg.com/vi/" + r.videoId + "/mqdefault.jpg")) + '" alt="">'
+      + '<div><div class="t">' + esc(r.title) + '</div><div class="m">' + esc(m) + '</div></div></div>';
+  }
+  if (r.kind === "channel") {
+    const m = [r.handle, r.subscriberCountText].filter(Boolean).join(" · ");
+    return '<div class="card chan" data-c="' + esc(r.channelId) + '">'
+      + '<img loading="lazy" src="' + esc(r.thumbnail || "") + '" alt="">'
+      + '<div><div class="t">' + esc(r.title) + '</div><div class="m">' + esc(m) + '</div></div></div>';
+  }
+  const m = [r.channel, r.videoCountText].filter(Boolean).join(" · ");
+  return '<div class="card">'
+    + '<img loading="lazy" src="' + esc(r.thumbnail || "") + '" alt="">'
+    + '<div><div class="t">' + esc(r.title) + '</div><div class="m">' + esc(m) + '</div></div></div>';
+}
+
+function bindCards() {
+  document.querySelectorAll(".card[data-v]").forEach(c => c.onclick = () => {
+    const id = c.dataset.v;
+    $("q").value = id;
+    const u = new URL(location.href); u.searchParams.set("v", id); history.replaceState(null, "", u);
+    $("results").classList.remove("show");
+    load(id);
+    $("vid").scrollIntoView({ behavior: "smooth", block: "start" });
+  });
+}
+
+async function search(q, append) {
+  if (!q && !SCONT) return;
+  if (!append) { STYPE = document.querySelector("#tabs button.on").dataset.type; SCONT = null; SLASTQ = q; }
+  $("msg").className = "msg";
+  $("msg").textContent = "Searching…";
+  if (!append) { $("cards").innerHTML = ""; $("results").classList.remove("show"); $("vid").classList.remove("show"); }
+  try {
+    const url = "/api/search?q=" + encodeURIComponent(SLASTQ) + "&type=" + STYPE
+      + (append && SCONT ? "&continuation=" + encodeURIComponent(SCONT) : "");
+    const d = await (await fetch(url)).json();
+    if (!d.ok) throw new Error(d.error || "search failed");
+    $("cards").insertAdjacentHTML("beforeend", d.results.map(cardFor).join(""));
+    SCONT = d.continuation;
+    $("more").style.display = SCONT ? "inline-block" : "none";
+    $("results").classList.add("show");
+    $("msg").textContent = d.count ? "" : "No results.";
+    bindCards();
+  } catch (err) {
+    $("msg").className = "msg err";
+    $("msg").textContent = "Error: " + err.message;
+  }
+}
+
+document.querySelectorAll("#tabs button").forEach(b => b.onclick = () => {
+  document.querySelectorAll("#tabs button").forEach(x => x.classList.remove("on"));
+  b.classList.add("on");
+  if (SLASTQ) search(SLASTQ, false);
+});
+$("more").onclick = () => search(SLASTQ, true);
+
+$("f").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const q = $("q").value.trim();
+  if (!q) return;
+  const u = new URL(location.href); u.searchParams.delete("v"); history.replaceState(null, "", u);
+  if (isUrl(q)) { $("results").classList.remove("show"); load(q); }
+  else search(q, false);
+});
 </script>
 </body>
 </html>`;

@@ -101,8 +101,14 @@ Leave `WARP_TRANSPORT=auto` — it will use QUIC where allowed and TCP elsewhere
 
 ### Browser UI — `GET /` (or `GET /?v=<id|url>`)
 
-Open the root URL in a browser to get a page where you paste a link, pick
-**Video / Audio / Video+Audio / All**, and see every format with two links:
+Open the root URL in a browser. The search box takes a keyword or a link:
+
+- **Keyword** → YouTube search with **Videos / Channels / Playlists / All**
+  filters and a **Load more** button (cursor pagination). Clicking a video card
+  loads its formats.
+- **Link / id** → loads that video directly.
+
+Each format row offers:
 
 - **Direct URL** — the raw googlevideo link (with a Copy button).
 - **Download** — proxied through this server (always works, Range/seek OK).
@@ -117,6 +123,44 @@ required params also shows this page instead of an error.
 ```json
 { "ok": true, "uptimeSeconds": 7, "client": "VISIONOS", "proxy": "direct" }
 ```
+
+### `GET /api/search?q=<query>[&type=video|channel|playlist|all][&continuation=<token>]`
+
+Searches YouTube through the same VISIONOS InnerTube client. Default type is
+`video`. Pass the `continuation` token from the previous response to fetch the
+next page (the server only follows real `nextContinuationData` tokens, so pages
+never repeat).
+
+```bash
+curl "http://localhost:8787/api/search?q=bangla+song"
+curl "http://localhost:8787/api/search?q=tahsan&type=channel"
+```
+
+```json
+{
+  "ok": true, "query": "bangla song", "type": "video", "count": 20,
+  "results": [
+    {
+      "kind": "video", "videoId": "iss_85SWLYA",
+      "title": "Prem Tumi | প্রেম তুমি | Tahsan | Tisha | ...",
+      "channel": "CD Choice", "lengthText": "5:51", "lengthSeconds": 350,
+      "viewCountText": "25M views", "publishedTimeText": "7 years ago",
+      "thumbnail": "https://i.ytimg.com/vi/iss_85SWLYA/hq720.jpg",
+      "downloadUrl": "http://localhost:8787/api/merge?v=iss_85SWLYA",
+      "audioUrl": "http://localhost:8787/api/link?v=iss_85SWLYA&format=audio",
+      "linkUrl": "http://localhost:8787/api/link?v=iss_85SWLYA"
+    }
+  ],
+  "continuation": "EpsDEgZ0YWhzYW4..."
+}
+```
+
+Video results also carry `infoUrl` and `url`; channel and playlist results carry
+their `url` plus `handle` / `subscriberCountText` and `videoCountText`.
+
+> VISIONOS never returns a muxed (progressive) track — only separate video and
+> audio — so `downloadUrl` points at `/api/merge`, which fetches both and muxes
+> them into one playable file.
 
 ### `GET /api/info?v=<id|url>[&format=video|audio|muxed][&maxHeight=1080]`
 
@@ -137,14 +181,17 @@ curl "http://localhost:8787/api/info?v=https://youtu.be/64f_JnZuJPo&format=audio
 }
 ```
 
-### `GET /api/merge?v=<id|url>&video=<itag>[&audio=<itag>][&dl=1]`
+### `GET /api/merge?v=<id|url>[&video=<itag>][&audio=<itag>][&dl=1]`
 
-Downloads the video track and the best matching audio track server-side and
-muxes them into one file (MP4 for H.264+AAC, WebM for VP9+Opus). The audio
-container is matched to the video's so players do not choke on Opus-in-MP4.
+Downloads a video track and a matching audio track server-side and muxes them
+into one file (MP4 for H.264+AAC, WebM for VP9+Opus). The audio container is
+matched to the video's so players do not choke on Opus-in-MP4. Omit `video` to
+let the server pick the highest-quality video track — handy straight from a
+search result.
 
 ```bash
 curl -L -o out.mp4 "http://localhost:8787/api/merge?v=KXPwKTI1zQQ&video=137&dl=1"
+curl -L -o best.mp4 "http://localhost:8787/api/merge?v=KXPwKTI1zQQ&dl=1"
 ```
 
 ### `GET /api/link?v=<id|url>[&itag=][&quality=best|1080|720|360|worst][&format=video|audio|any]`
