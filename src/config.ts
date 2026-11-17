@@ -7,11 +7,18 @@ export const config = {
   port: Number(process.env.PORT ?? 8787),
   host: process.env.HOST ?? "0.0.0.0",
 
-  /** InnerTube API key recovered from the Vidmate APK. */
-  apiKey: process.env.YT_API_KEY ?? "AIzaSyA8eiZmM1FaDVjRy-df2KTyQ_vz_yYM39w",
+  /** Upstream API key recovered from the Vidmate APK. */
+  apiKey:
+    process.env.UPSTREAM_API_KEY ??
+    process.env.YT_API_KEY ??
+    "AIzaSyA8eiZmM1FaDVjRy-df2KTyQ_vz_yYM39w",
 
-  /** Innertube hosts, tried in order. */
-  hosts: (process.env.YT_HOSTS ?? "https://youtubei.googleapis.com").split(","),
+  /** Upstream API hosts, tried in order. */
+  hosts: (
+    process.env.UPSTREAM_HOSTS ??
+    process.env.YT_HOSTS ??
+    "https://youtubei.googleapis.com"
+  ).split(","),
 
   /**
    * Optional proxy for all outbound traffic, e.g.
@@ -35,10 +42,11 @@ export const config = {
    * needs no PO token.
    */
   client: {
-    clientName: process.env.YT_CLIENT_NAME ?? "VISIONOS",
-    clientVersion: process.env.YT_CLIENT_VERSION ?? "1.02",
-    clientNameHeader: process.env.YT_CLIENT_HEADER ?? "101",
+    clientName: process.env.UPSTREAM_CLIENT_NAME ?? process.env.YT_CLIENT_NAME ?? "VISIONOS",
+    clientVersion: process.env.UPSTREAM_CLIENT_VERSION ?? process.env.YT_CLIENT_VERSION ?? "1.02",
+    clientNameHeader: process.env.UPSTREAM_CLIENT_HEADER ?? process.env.YT_CLIENT_HEADER ?? "101",
     userAgent:
+      process.env.UPSTREAM_USER_AGENT ??
       process.env.YT_USER_AGENT ??
       "Mozilla/5.0 (Macintosh; Intel Mac OS X 15_7_3) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.0 Safari/605.1.15",
     deviceMake: "Apple",

@@ -227,6 +227,8 @@ function collectRenderers(root: any): SearchResult[] {
         kind: "channel",
         channelId: c.channelId,
         title: textOf(c.displayName ?? c.title),
+        // These two fields are swapped in the response: `subscriberCountText`
+        // holds the handle ("@name") and `videoCountText` the subscriber line.
         handle: textOf(c.subscriberCountText) || undefined,
         subscriberCountText: textOf(c.videoCountText) || undefined,
         thumbnail: thumbOf(c.thumbnail),

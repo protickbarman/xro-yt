@@ -336,7 +336,7 @@ app.use((req, res) => {
   res.status(404).json({
     ok: false,
     error: "not found",
-    routes: ["GET /", "GET /health", "GET /api/search?q=", "GET /api/info?v=", "GET /api/link?v=", "GET /api/download?v=&itag="],
+    routes: ["GET /", "GET /health", "GET /api/search?q=", "GET /api/info?v=", "GET /api/link?v=", "GET /api/download?v=&itag=", "GET /api/merge?v="],
   });
 });
 
