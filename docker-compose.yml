@@ -1,0 +1,28 @@
+services:
+  vidmate-yt-api:
+    build: .
+    image: vidmate-yt-api:latest
+    ports:
+      - "8787:8787"
+    environment:
+      HOST: "0.0.0.0"
+      PORT: "8787"
+      # usque binds SOCKS5 on loopback inside the container.
+      PROXY: "socks5://127.0.0.1:40000"
+      WARP_CONFIG: "/data/warp.json"
+    volumes:
+      - warp-data:/data
+    # The MASQUE/QUIC handshake needs the usque process to keep running; give it
+    # a moment on restart storms.
+    restart: unless-stopped
+    # QUIC is UDP; the default bridge network handles it, but this keeps the
+    # container from being recreated on transient failures.
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8787/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 40s
+
+volumes:
+  warp-data:

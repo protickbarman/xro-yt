@@ -1,0 +1,286 @@
+import express, { type Request, type Response } from "express";
+import { config } from "./config.js";
+import { getVideoInfo, type FormatInfo } from "./innertube.js";
+import { streamMedia } from "./stream.js";
+import { mergeAndStream } from "./merge.js";
+import { renderHome } from "./home.js";
+
+const app = express();
+app.use(express.json());
+
+const startedAt = Date.now();
+
+/** Browsers get a page; everyone else gets JSON. */
+function wantsHtml(req: Request): boolean {
+  if (req.query.json !== undefined) return false;
+  const accept = String(req.headers.accept ?? "");
+  return accept.includes("text/html");
+}
+
+app.get("/", (_req, res) => {
+  res.type("html").send(renderHome());
+});
+
+function fmtPublic(base: string, v: { videoId: string }, f: FormatInfo) {
+  return {
+    itag: f.itag,
+    kind: f.kind,
+    quality: f.quality,
+    container: f.container,
+    codec: f.codec,
+    bitrate: f.bitrate,
+    contentLength: f.contentLength,
+    fps: f.fps,
+    width: f.width,
+    height: f.height,
+    audioSampleRate: f.audioSampleRate,
+    /** Direct googlevideo URL (short-lived; `expiresInSeconds` tells you how long). */
+    directUrl: f.url,
+    /** Same file, proxied through this server — use this one from a browser. */
+    proxyUrl: `${base}/api/download?v=${encodeURIComponent(v.videoId)}&itag=${f.itag}`,
+    /** Video only: one-shot mux of this track with the best matching audio. */
+    mergeUrl: f.kind === "video"
+      ? `${base}/api/merge?v=${encodeURIComponent(v.videoId)}&video=${f.itag}`
+      : undefined,
+  };
+}
+
+function baseUrl(req: Request): string {
+  const proto = (req.headers["x-forwarded-proto"] as string) ?? req.protocol;
+  return `${proto}://${req.get("host")}`;
+}
+
+app.get("/health", (_req, res) => {
+  res.json({
+    ok: true,
+    uptimeSeconds: Math.floor((Date.now() - startedAt) / 1000),
+    client: config.client.clientName,
+    clientVersion: config.client.clientVersion,
+    proxy: config.proxy || "direct",
+    host: config.hosts[0],
+  });
+});
+
+/**
+ * GET /api/info?v=<id|url>[&format=video|audio|muxed][&maxHeight=1080]
+ * Returns metadata plus every format with direct and proxied download links.
+ * Opened in a browser without `v`, shows the UI instead.
+ */
+app.get("/api/info", async (req: Request, res: Response) => {
+  const input = String(req.query.v ?? req.query.url ?? req.query.id ?? "").trim();
+  if (!input) {
+    if (wantsHtml(req)) {
+      res.type("html").send(renderHome());
+      return;
+    }
+    res.status(400).json({ ok: false, error: "missing query param: v (video id or URL)" });
+    return;
+  }
+  try {
+    const info = await getVideoInfo(input);
+    const base = baseUrl(req);
+    const kind = req.query.format ? String(req.query.format) : undefined;
+    const maxHeight = req.query.maxHeight ? Number(req.query.maxHeight) : undefined;
+
+    let formats = info.formats;
+    if (kind) formats = formats.filter((f) => f.kind === kind);
+    if (maxHeight) formats = formats.filter((f) => !f.height || f.height <= maxHeight);
+
+    res.json({
+      ok: true,
+      video: {
+        videoId: info.videoId,
+        title: info.title,
+        author: info.author,
+        lengthSeconds: info.lengthSeconds,
+        viewCount: info.viewCount,
+      },
+      hlsManifestUrl: info.hlsManifestUrl,
+      dashManifestUrl: info.dashManifestUrl,
+      expiresInSeconds: info.expiresInSeconds,
+      count: formats.length,
+      formats: formats.map((f) => fmtPublic(base, info, f)),
+    });
+  } catch (err) {
+    res.status(502).json({ ok: false, error: String(err instanceof Error ? err.message : err) });
+  }
+});
+
+/**
+ * GET /api/link?v=<id|url>[&itag=][&quality=best|1080|720|360][&format=]
+ * Returns a single best-matching download link.
+ */
+app.get("/api/link", async (req: Request, res: Response) => {
+  const input = String(req.query.v ?? req.query.url ?? req.query.id ?? "").trim();
+  if (!input) {
+    res.status(400).json({ ok: false, error: "missing query param: v (video id or URL)" });
+    return;
+  }
+  try {
+    const info = await getVideoInfo(input);
+    const base = baseUrl(req);
+    const itag = req.query.itag ? Number(req.query.itag) : undefined;
+    const wantKind = req.query.format ? String(req.query.format) : "video";
+    const quality = String(req.query.quality ?? "best").toLowerCase();
+
+    let candidates = info.formats;
+    if (itag) {
+      candidates = candidates.filter((f) => f.itag === itag);
+    } else {
+      candidates = candidates.filter((f) => (wantKind === "any" ? true : f.kind === wantKind));
+      if (quality !== "best" && quality !== "worst") {
+        const h = Number(quality);
+        if (!Number.isNaN(h)) candidates = candidates.filter((f) => !f.height || f.height <= h);
+      }
+    }
+    if (candidates.length === 0) {
+      res.status(404).json({ ok: false, error: "no format matched the request" });
+      return;
+    }
+    candidates.sort((a, b) => b.bitrate - a.bitrate);
+    const chosen = quality === "worst" ? candidates[candidates.length - 1] : candidates[0];
+
+    // Audio track that pairs with the chosen video (best audio, or lowest for "worst").
+    const audio = info.formats
+      .filter((f) => f.kind === "audio")
+      .sort((a, b) => b.bitrate - a.bitrate);
+    const audioChosen = quality === "worst" ? audio[audio.length - 1] : audio[0];
+
+    res.json({
+      ok: true,
+      video: {
+        videoId: info.videoId,
+        title: info.title,
+        author: info.author,
+        lengthSeconds: info.lengthSeconds,
+      },
+      expiresInSeconds: info.expiresInSeconds,
+      selected: {
+        video: chosen ? fmtPublic(base, info, chosen) : null,
+        audio: chosen?.kind === "muxed" ? null : audioChosen ? fmtPublic(base, info, audioChosen) : null,
+      },
+      /** Best single link: proxied video (muxed if available). */
+      downloadUrl: chosen
+        ? `${base}/api/download?v=${encodeURIComponent(info.videoId)}&itag=${chosen.itag}`
+        : null,
+      directUrl: chosen?.url ?? null,
+      audioUrl: chosen?.kind === "muxed" || !audioChosen
+        ? null
+        : `${base}/api/download?v=${encodeURIComponent(info.videoId)}&itag=${audioChosen.itag}`,
+      audioDirectUrl: chosen?.kind === "muxed" || !audioChosen ? null : audioChosen.url,
+      /** One-shot mux of the chosen video with its paired audio. */
+      mergeUrl: chosen && chosen.kind === "video"
+        ? `${base}/api/merge?v=${encodeURIComponent(info.videoId)}&video=${chosen.itag}`
+        : null,
+    });
+  } catch (err) {
+    res.status(502).json({ ok: false, error: String(err instanceof Error ? err.message : err) });
+  }
+});
+
+/**
+ * GET /api/download?v=<id|url>&itag=<itag>
+ * Streams the media through the server with Range support (seekable, no CORS
+ * problems). Add &dl=1 to force a file download.
+ */
+app.get("/api/download", async (req: Request, res: Response) => {
+  const input = String(req.query.v ?? req.query.url ?? req.query.id ?? "").trim();
+  const itag = Number(req.query.itag);
+  if (!input || Number.isNaN(itag)) {
+    if (wantsHtml(req)) {
+      res.type("html").send(renderHome());
+      return;
+    }
+    res.status(400).json({ ok: false, error: "missing query params: v and itag" });
+    return;
+  }
+  try {
+    const info = await getVideoInfo(input);
+    const fmt = info.formats.find((f) => f.itag === itag);
+    if (!fmt) {
+      res.status(404).json({ ok: false, error: `itag ${itag} not available` });
+      return;
+    }
+    if (req.query.dl) {
+      const ext = fmt.container || (fmt.kind === "audio" ? "m4a" : "mp4");
+      const safe = info.title.replace(/[^\w.\- ]+/g, "_").slice(0, 80) || info.videoId;
+      res.setHeader("Content-Disposition", `attachment; filename="${safe}_${fmt.quality}_${itag}.${ext}"`);
+    }
+    await streamMedia(fmt.url, req.headers.range, fmt.contentLength, res, fmt.mimeType, req.method === "HEAD");
+  } catch (err) {
+    if (!res.headersSent) {
+      res.status(502).json({ ok: false, error: String(err instanceof Error ? err.message : err) });
+    } else {
+      res.end();
+    }
+  }
+});
+
+/**
+ * GET /api/merge?v=<id|url>&video=<itag>[&audio=<itag>][&dl=1]
+ * Downloads both tracks server-side and muxes them into one file.
+ */
+app.get("/api/merge", async (req: Request, res: Response) => {
+  const input = String(req.query.v ?? req.query.url ?? req.query.id ?? "").trim();
+  const videoItag = Number(req.query.video);
+  if (!input || Number.isNaN(videoItag)) {
+    if (wantsHtml(req)) {
+      res.type("html").send(renderHome());
+      return;
+    }
+    res.status(400).json({ ok: false, error: "missing query params: v and video (itag)" });
+    return;
+  }
+  try {
+    const info = await getVideoInfo(input);
+    const video = info.formats.find((f) => f.itag === videoItag && f.kind !== "audio");
+    if (!video) {
+      res.status(404).json({ ok: false, error: `no video format with itag ${videoItag}` });
+      return;
+    }
+    // Prefer an audio track whose container matches the video (AAC-in-MP4 or
+    // Opus-in-WebM); mixing Opus into MP4 breaks many players.
+    const audios = info.formats.filter((f) => f.kind === "audio");
+    const audio =
+      (req.query.audio ? info.formats.find((f) => f.itag === Number(req.query.audio)) : undefined) ??
+      audios.filter((f) => f.container === video.container).sort((a, b) => b.bitrate - a.bitrate)[0] ??
+      audios.sort((a, b) => b.bitrate - a.bitrate)[0];
+    if (!audio) {
+      res.status(404).json({ ok: false, error: "no matching audio format" });
+      return;
+    }
+    if (req.query.dl !== undefined) {
+      const safe = info.title.replace(/[^\w.\- ]+/g, "_").slice(0, 80) || info.videoId;
+      const ext = video.container === "webm" && audio.container === "webm" ? "webm" : "mp4";
+      res.setHeader("Content-Disposition", `attachment; filename="${safe}_${video.quality}.${ext}"`);
+    }
+    await mergeAndStream(video, audio, res);
+  } catch (err) {
+    if (!res.headersSent) {
+      res.status(502).json({ ok: false, error: String(err instanceof Error ? err.message : err) });
+    } else {
+      res.end();
+    }
+  }
+});
+
+app.use((req, res) => {
+  if (wantsHtml(req)) {
+    res.status(404).type("html").send(renderHome());
+    return;
+  }
+  res.status(404).json({
+    ok: false,
+    error: "not found",
+    routes: ["GET /", "GET /health", "GET /api/info?v=", "GET /api/link?v=", "GET /api/download?v=&itag="],
+  });
+});
+
+app.listen(config.port, config.host, () => {
+  console.log(`vidmate-yt-api listening on http://${config.host}:${config.port}`);
+  console.log(`  client : ${config.client.clientName} ${config.client.clientVersion} (name ${config.client.clientNameHeader})`);
+  console.log(`  proxy  : ${config.proxy || "direct"}`);
+  console.log(`  host   : ${config.hosts[0]}`);
+});
+
+export default app;

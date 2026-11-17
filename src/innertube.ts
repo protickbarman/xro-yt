@@ -1,0 +1,219 @@
+import { config } from "./config.js";
+import { requestJson } from "./http.js";
+
+/** Subset of the InnerTube player response we care about. */
+export interface RawFormat {
+  itag: number;
+  url?: string;
+  mimeType?: string;
+  bitrate?: number;
+  contentLength?: string;
+  qualityLabel?: string;
+  audioQuality?: string;
+  audioSampleRate?: string;
+  fps?: number;
+  width?: number;
+  height?: number;
+}
+
+export interface PlayerResponse {
+  playabilityStatus?: { status?: string; reason?: string };
+  streamingData?: {
+    expiresInSeconds?: string;
+    formats?: RawFormat[];
+    adaptiveFormats?: RawFormat[];
+    hlsManifestUrl?: string;
+    dashManifestUrl?: string;
+  };
+  videoDetails?: {
+    videoId?: string;
+    title?: string;
+    lengthSeconds?: string;
+    author?: string;
+    viewCount?: string;
+    shortDescription?: string;
+  };
+}
+
+export interface FormatInfo {
+  itag: number;
+  url: string;
+  mimeType: string;
+  /** "video" | "audio" | "muxed" */
+  kind: "video" | "audio" | "muxed";
+  container: string;
+  codec: string;
+  quality: string;
+  bitrate: number;
+  contentLength: number;
+  fps?: number;
+  width?: number;
+  height?: number;
+  audioSampleRate?: string;
+}
+
+export interface VideoInfo {
+  videoId: string;
+  title: string;
+  author: string;
+  lengthSeconds: number;
+  viewCount: number;
+  hlsManifestUrl?: string;
+  dashManifestUrl?: string;
+  expiresInSeconds: number;
+  formats: FormatInfo[];
+}
+
+const CLIENT_HEADERS = (visitorData: string): Record<string, string> => ({
+  "Content-Type": "application/json",
+  "User-Agent": config.client.userAgent,
+  "X-Youtube-Client-Name": config.client.clientNameHeader,
+  "X-Youtube-Client-Version": config.client.clientVersion,
+  "X-Goog-Visitor-Id": visitorData,
+  "X-Goog-Api-Format-Version": "2",
+  "Accept-Language": "en-US,en;q=0.9",
+});
+
+/** Extract a video id from a raw id or any common YouTube URL form. */
+export function parseVideoId(input: string): string {
+  const s = input.trim();
+  if (/^[A-Za-z0-9_-]{11}$/.test(s)) return s;
+  try {
+    const u = new URL(s);
+    if (u.hostname === "youtu.be") return u.pathname.slice(1, 12);
+    const v = u.searchParams.get("v");
+    if (v) return v;
+    const m = u.pathname.match(/\/(?:embed|shorts|live|v)\/([A-Za-z0-9_-]{11})/);
+    if (m) return m[1];
+  } catch {
+    /* not a URL */
+  }
+  throw new Error(`Could not parse a video id from: ${input}`);
+}
+
+function clientContext(visitorData: string) {
+  return {
+    client: {
+      clientName: config.client.clientName,
+      clientVersion: config.client.clientVersion,
+      deviceMake: config.client.deviceMake,
+      deviceModel: config.client.deviceModel,
+      osName: config.client.osName,
+      osVersion: config.client.osVersion,
+      hl: "en",
+      gl: "US",
+      visitorData,
+    },
+  };
+}
+
+async function getVisitorData(): Promise<string> {
+  const body = JSON.stringify({
+    context: { client: { clientName: config.client.clientName, clientVersion: config.client.clientVersion, hl: "en", gl: "US" } },
+  });
+  const data = await requestJson<{ responseContext?: { visitorData?: string } }>(
+    `${config.hosts[0]}/youtubei/v1/visitor_id?key=${config.apiKey}&prettyPrint=false`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "User-Agent": config.client.userAgent },
+      body,
+      proxy: config.proxy,
+      timeoutMs: config.timeoutMs,
+    },
+  );
+  const vd = data.responseContext?.visitorData;
+  if (!vd) throw new Error("visitor_id response missing visitorData");
+  return vd;
+}
+
+function classify(f: RawFormat): FormatInfo["kind"] {
+  const mime = f.mimeType ?? "";
+  if (mime.startsWith("audio")) return "audio";
+  if (mime.startsWith("video") && f.audioQuality) return "muxed";
+  return "video";
+}
+
+function toFormatInfo(f: RawFormat): FormatInfo | undefined {
+  if (!f.url) return undefined;
+  const mime = f.mimeType ?? "";
+  const [container, codecPart] = mime.split(";");
+  const codec = (codecPart ?? "").replace(/codecs="?|"?/g, "").trim() || "unknown";
+  return {
+    itag: f.itag,
+    url: f.url,
+    mimeType: mime,
+    kind: classify(f),
+    container: container.split("/")[1] ?? "unknown",
+    codec,
+    quality: f.qualityLabel ?? f.audioQuality ?? "unknown",
+    bitrate: f.bitrate ?? 0,
+    contentLength: Number(f.contentLength ?? 0),
+    fps: f.fps,
+    width: f.width,
+    height: f.height,
+    audioSampleRate: f.audioSampleRate,
+  };
+}
+
+/**
+ * Call the InnerTube player API with the configured client and return parsed
+ * video info plus per-format direct media URLs.
+ */
+export async function getVideoInfo(rawIdOrUrl: string): Promise<VideoInfo> {
+  const videoId = parseVideoId(rawIdOrUrl);
+
+  let lastErr: unknown;
+  for (let attempt = 1; attempt <= config.retries; attempt++) {
+    try {
+      const visitorData = await getVisitorData();
+      const body = JSON.stringify({
+        context: clientContext(visitorData),
+        videoId,
+        contentCheckOk: true,
+        racyCheckOk: true,
+      });
+
+      const pr = await requestJson<PlayerResponse>(
+        `${config.hosts[0]}/youtubei/v1/player?key=${config.apiKey}&prettyPrint=false`,
+        {
+          method: "POST",
+          headers: CLIENT_HEADERS(visitorData),
+          body,
+          proxy: config.proxy,
+          timeoutMs: config.timeoutMs,
+        },
+      );
+
+      const status = pr.playabilityStatus?.status;
+      if (status && status !== "OK") {
+        throw new Error(`playabilityStatus=${status}: ${pr.playabilityStatus?.reason ?? ""}`);
+      }
+      const sd = pr.streamingData;
+      if (!sd) throw new Error("player response has no streamingData");
+
+      const all = [...(sd.formats ?? []), ...(sd.adaptiveFormats ?? [])];
+      const formats = all
+        .map(toFormatInfo)
+        .filter((f): f is FormatInfo => Boolean(f))
+        .sort((a, b) => b.bitrate - a.bitrate);
+
+      if (formats.length === 0) throw new Error("no downloadable formats returned");
+
+      return {
+        videoId,
+        title: pr.videoDetails?.title ?? "",
+        author: pr.videoDetails?.author ?? "",
+        lengthSeconds: Number(pr.videoDetails?.lengthSeconds ?? 0),
+        viewCount: Number(pr.videoDetails?.viewCount ?? 0),
+        hlsManifestUrl: sd.hlsManifestUrl,
+        dashManifestUrl: sd.dashManifestUrl,
+        expiresInSeconds: Number(sd.expiresInSeconds ?? 0),
+        formats,
+      };
+    } catch (err) {
+      lastErr = err;
+      await new Promise((r) => setTimeout(r, 1000 * attempt));
+    }
+  }
+  throw new Error(`player API failed after ${config.retries} attempts: ${String(lastErr)}`);
+}
