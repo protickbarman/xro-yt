@@ -34,6 +34,33 @@ With a proxy:
 PROXY=socks5://127.0.0.1:40000 npm run dev
 ```
 
+## Run with Docker (WARP included)
+
+The image bundles Cloudflare WARP (via [usque](https://github.com/Diniboy1123/usque))
+and starts it as a loopback SOCKS5 proxy before the server, so downloads work
+from a datacenter host with no external proxy.
+
+```bash
+docker build -t vidmate-yt-api .
+docker run -d --name vidmate-yt-api -p 8787:8787 -v warp-data:/data vidmate-yt-api
+# then open http://localhost:8787/
+```
+
+or with Compose:
+
+```bash
+docker compose up -d --build
+```
+
+On first start the entrypoint registers a WARP device and writes the config to
+`/data/warp.json` (kept in the `warp-data` volume so it is reused on restart —
+no credentials are baked into the image). The SOCKS proxy is bound to
+`127.0.0.1` inside the container and is never published.
+
+| Build arg | Default | Meaning |
+|-----------|---------|---------|
+| `USQUE_VERSION` | `4.2.1` | usque release to download (checksum-verified) |
+
 ## Configuration (env)
 
 | Var | Default | Meaning |
