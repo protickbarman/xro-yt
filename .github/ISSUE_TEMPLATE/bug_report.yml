@@ -1,0 +1,33 @@
+name: Bug report
+description: Report a reproducible defect
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Do not include API keys, proxy credentials, private URLs, or personal data.
+  - type: textarea
+    id: description
+    attributes:
+      label: Description
+      description: What happened, and what did you expect?
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Reproduction
+      description: Provide the safest minimal steps or request.
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Node version, OS, Docker usage, and relevant non-secret configuration.
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: Include relevant redacted output.

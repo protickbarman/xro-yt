@@ -47,7 +47,20 @@ function fmtPublic(base: string, v: { videoId: string }, f: FormatInfo) {
 }
 
 function baseUrl(req: Request): string {
-  const proto = (req.headers["x-forwarded-proto"] as string) ?? req.protocol;
+  if (config.publicBaseUrl) {
+    try {
+      const publicUrl = new URL(config.publicBaseUrl);
+      if (["http:", "https:"].includes(publicUrl.protocol) && !publicUrl.pathname.replaceAll("/", "")) {
+        return publicUrl.origin;
+      }
+    } catch {
+      // Fall back to the request origin; invalid PUBLIC_BASE_URL must not crash a request.
+    }
+  }
+  const forwardedProto = String(req.headers["x-forwarded-proto"] ?? "")
+    .split(",")[0]
+    .trim();
+  const proto = ["http", "https"].includes(forwardedProto) ? forwardedProto : req.protocol;
   return `${proto}://${req.get("host")}`;
 }
 
@@ -341,7 +354,7 @@ app.use((req, res) => {
 });
 
 app.listen(config.port, config.host, () => {
-  console.log(`vidmate-yt-api listening on http://${config.host}:${config.port}`);
+  console.log(`xro-yt listening on http://${config.host}:${config.port}`);
   console.log(`  client : ${config.client.clientName} ${config.client.clientVersion} (name ${config.client.clientNameHeader})`);
   console.log(`  proxy  : ${config.proxy || "direct"}`);
   console.log(`  host   : ${config.hosts[0]}`);

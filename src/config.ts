@@ -6,6 +6,7 @@
 export const config = {
   port: Number(process.env.PORT ?? 8787),
   host: process.env.HOST ?? "0.0.0.0",
+  publicBaseUrl: process.env.PUBLIC_BASE_URL?.trim().replace(/\/+$/, "") ?? "",
 
   /** Upstream API key recovered from the Vidmate APK. */
   apiKey:

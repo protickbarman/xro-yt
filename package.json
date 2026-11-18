@@ -1,15 +1,35 @@
 {
-  "name": "vidmate-yt-api",
+  "name": "xro-yt",
   "version": "1.0.0",
-  "description": "Node.js + TypeScript server exposing a working YouTube download link via Vidmate's InnerTube (VISIONOS client) mechanism.",
+  "description": "A Node.js and TypeScript media metadata and streaming API for research, personal use, and self-hosted integrations.",
   "type": "module",
   "main": "dist/index.js",
+  "private": false,
+  "license": "MIT",
+  "author": "Protick Barman",
+  "homepage": "https://github.com/protickbarman/xro-yt#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/protickbarman/xro-yt.git"
+  },
+  "bugs": {
+    "url": "https://github.com/protickbarman/xro-yt/issues"
+  },
+  "keywords": [
+    "nodejs",
+    "typescript",
+    "express",
+    "media",
+    "api",
+    "streaming"
+  ],
   "scripts": {
     "dev": "tsx watch src/index.ts",
     "build": "tsc -p tsconfig.json",
     "start": "node dist/index.js",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "npm run build && node --test \"test/**/*.test.mjs\""
+    "test": "npm run build && node --test \"test/**/*.test.mjs\"",
+    "check": "npm run typecheck && npm test"
   },
   "dependencies": {
     "express": "^5.1.0",

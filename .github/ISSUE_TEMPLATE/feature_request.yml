@@ -1,0 +1,24 @@
+name: Feature request
+description: Suggest a focused improvement
+labels:
+  - enhancement
+body:
+  - type: textarea
+    id: use-case
+    attributes:
+      label: Use case
+      description: What problem should the feature solve?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed change
+      description: Describe the intended behavior and API impact.
+    validations:
+      required: true
+  - type: textarea
+    id: safety
+    attributes:
+      label: Legal and safety considerations
+      description: Explain how the feature maintains lawful use and suitable access controls.
