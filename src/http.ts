@@ -1,3 +1,4 @@
+import http from "node:http";
 import https from "node:https";
 import { SocksProxyAgent } from "socks-proxy-agent";
 
@@ -43,11 +44,12 @@ export function request(
     const go = (target: string, left: number) => {
       const u = new URL(target);
       const agent = agentFor(opts.proxy ?? "");
-      const req = https.request(
+      const transport = u.protocol === "http:" ? http : https;
+      const req = transport.request(
         {
           protocol: u.protocol,
           hostname: u.hostname,
-          port: u.port || 443,
+          port: u.port || (u.protocol === "http:" ? 80 : 443),
           path: u.pathname + u.search,
           method: opts.method ?? "GET",
           headers: opts.headers,
@@ -74,7 +76,9 @@ export function request(
         },
       );
       req.on("error", reject);
-      const timeout = opts.timeoutMs ?? 30000;
+      // `setTimeout(0)` means "never time out", so a falsy or negative value has
+      // to fall back to the default rather than being passed through.
+      const timeout = opts.timeoutMs && opts.timeoutMs > 0 ? opts.timeoutMs : 30000;
       req.setTimeout(timeout, () => req.destroy(new Error(`timeout after ${timeout}ms`)));
       if (opts.body) req.write(opts.body);
       req.end();
