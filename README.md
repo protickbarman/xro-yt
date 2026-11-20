@@ -1,4 +1,4 @@
-# vidmate-api
+# Xro-YT-Api
 
 A small Node.js + TypeScript HTTP server that, given a media id or URL, returns
 **direct and proxied download links** for every available audio/video track, plus
